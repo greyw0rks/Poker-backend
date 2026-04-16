@@ -1,0 +1,245 @@
+/**
+ * server/index.js
+ *
+ * Express + Socket.io game server.
+ *
+ * REST endpoints:
+ *   GET  /health
+ *   GET  /tables              — list open lobby tables
+ *   POST /tables              — create table (operator only)
+ *   GET  /tables/:id          — table state
+ *   POST /tables/:id/add-bot  — add bot for testing (dev mode only)
+ *
+ * Socket.io events (client → server):
+ *   join_table   { tableId, name, address, buyInUSD }
+ *   action       { tableId, type, amount? }
+ *   get_state    { tableId }
+ *   get_cards    { tableId }
+ *
+ * Socket.io events (server → client):
+ *   connected        { socketId }
+ *   table_list       [tables...]
+ *   table_state      { ...state }
+ *   hole_cards       { cards: ['As','Kd'] }
+ *   player_joined    { tableId, playerId, name, chips }
+ *   lobby_timer      { tableId, secondsLeft, startsAt }
+ *   game_started     { tableId, players }
+ *   hand_started     { tableId, dealerPos, sbIdx, bbIdx }
+ *   street_dealt     { tableId, street, board }
+ *   player_action    { tableId, playerIdx, type, amount? }
+ *   game_state       { tableId, state }
+ *   hand_complete    { tableId, winners, payouts, board, ranked }
+ *   action_timeout   { tableId, playerIdx }
+ *   table_finished   { tableId, results }
+ *   error            { message }
+ */
+
+require('dotenv').config();
+const express    = require('express');
+const http       = require('http');
+const { Server } = require('socket.io');
+const { TableManager } = require('./tableManager');
+const { STRATEGIES }   = require('../bots/botPlayer');
+
+const PORT     = process.env.PORT     || 3001;
+const DEV_MODE = process.env.NODE_ENV !== 'production';
+
+// ─── Setup ──────────────────────────────────────────────────────────────────
+const app    = express();
+const server = http.createServer(app);
+const io     = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+});
+
+app.use(express.json());
+
+const manager = new TableManager({ botMode: DEV_MODE });
+
+// ─── Wire TableManager events → all sockets in a table room ─────────────────
+manager.on('tableCreated',    d => io.emit('table_list', manager.getLobbyTables()));
+manager.on('playerJoined',    d => io.to(d.tableId).emit('player_joined', d));
+manager.on('lobbyTimerStarted', d => {
+  io.to(d.tableId).emit('lobby_timer', d);
+  io.emit('table_list', manager.getLobbyTables()); // update counts
+});
+manager.on('lobbyTimerExtended', d => io.to(d.tableId).emit('lobby_timer', d));
+manager.on('gameStarted',     d => io.to(d.tableId).emit('game_started', d));
+manager.on('gameState',       d => io.to(d.tableId).emit('game_state', d));
+manager.on('handStarted',     d => {
+  io.to(d.tableId).emit('hand_started', d);
+  // Send each player their hole cards privately
+  const table = manager.getTableState(d.tableId);
+  if (!table) return;
+  // Iterate sockets in the room
+  const room = io.sockets.adapter.rooms.get(d.tableId);
+  if (!room) return;
+  for (const socketId of room) {
+    const sock = io.sockets.sockets.get(socketId);
+    const pid  = sock?.data?.playerId;
+    const pidx = sock?.data?.playerIdx;
+    if (pidx !== undefined && d.holeCards?.[pidx]) {
+      sock.emit('hole_cards', { tableId: d.tableId, cards: d.holeCards[pidx].cards });
+    }
+  }
+});
+manager.on('streetDealt',     d => io.to(d.tableId).emit('street_dealt', d));
+manager.on('playerAction',    d => io.to(d.tableId).emit('player_action', d));
+manager.on('actionTimeout',   d => io.to(d.tableId).emit('action_timeout', d));
+manager.on('handComplete',    d => io.to(d.tableId).emit('hand_complete', d));
+manager.on('tableFinished',   d => io.to(d.tableId).emit('table_finished', d));
+manager.on('tableCancelled',  d => io.to(d.tableId).emit('error', { message: 'Table cancelled', ...d }));
+manager.on('chainSyncError',  d => console.error('[ChainSync]', d));
+
+// ─── REST API ────────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
+app.get('/tables', (req, res) => {
+  res.json(manager.getLobbyTables());
+});
+
+app.post('/tables', (req, res) => {
+  // In production: verify operator signature here
+  const { minBuyInUSD = 1, maxBuyInUSD = 0, name } = req.body;
+  const tableId = manager.createTable({ minBuyInUSD, maxBuyInUSD, name });
+  res.json({ tableId });
+});
+
+app.get('/tables/:id', (req, res) => {
+  const state = manager.getTableState(req.params.id);
+  if (!state) return res.status(404).json({ error: 'Table not found' });
+  res.json(state);
+});
+
+// Dev-only: add bots to a table
+app.post('/tables/:id/add-bot', (req, res) => {
+  if (!DEV_MODE) return res.status(403).json({ error: 'Dev only' });
+  const { strategy = 'GTO_BASIC', buyInUSD } = req.body;
+  const botId = manager.addBot(req.params.id, STRATEGIES[strategy], buyInUSD);
+  if (!botId) return res.status(400).json({ error: 'Could not add bot' });
+  res.json({ botId });
+});
+
+// Dev-only: spin up a full test table with bots
+app.post('/dev/bot-table', (req, res) => {
+  if (!DEV_MODE) return res.status(403).json({ error: 'Dev only' });
+  const { playerCount = 4, minBuyInUSD = 1 } = req.body;
+  const strategies = [
+    STRATEGIES.GTO_BASIC,
+    STRATEGIES.AGGRESSIVE,
+    STRATEGIES.CALL_STATION,
+    STRATEGIES.RANDOM,
+    STRATEGIES.FOLDER,
+    STRATEGIES.GTO_BASIC,
+  ];
+
+  const tableId = manager.createTable({ minBuyInUSD, name: 'Bot Test Table' });
+
+  const count = Math.max(3, Math.min(6, playerCount));
+  const botIds = [];
+  for (let i = 0; i < count; i++) {
+    const strat = strategies[i % strategies.length];
+    const buyIn = minBuyInUSD + Math.random() * 5;
+    const botId = manager.addBot(tableId, strat, Math.round(buyIn * 100) / 100);
+    botIds.push(botId);
+  }
+
+  res.json({ tableId, botIds });
+});
+
+// ─── Socket.io ───────────────────────────────────────────────────────────────
+io.on('connection', (socket) => {
+  console.log(`[+] Socket connected: ${socket.id}`);
+  socket.emit('connected', { socketId: socket.id });
+
+  // ── join_table ────────────────────────────────────────────────────────
+  socket.on('join_table', ({ tableId, name, address, buyInUSD }) => {
+    if (!tableId || !name || !address || !buyInUSD) {
+      return socket.emit('error', { message: 'Missing required fields' });
+    }
+
+    const result = manager.joinTable({
+      tableId,
+      playerId: socket.id,
+      name,
+      address,
+      buyInUSD: Number(buyInUSD),
+    });
+
+    if (!result.ok) return socket.emit('error', { message: result.error });
+
+    socket.join(tableId);
+    socket.data.tableId     = tableId;
+    socket.data.playerId    = socket.id;
+    socket.data.address     = address;
+
+    // Store player index for hole card delivery
+    const tableState = manager.getTableState(tableId);
+    const pIdx = tableState?.players?.findIndex(p => p.id === socket.id);
+    socket.data.playerIdx = pIdx >= 0 ? pIdx : undefined;
+
+    socket.emit('join_ok', {
+      tableId,
+      chips: result.chips,
+      tableState: manager.getTableState(tableId),
+    });
+
+    console.log(`[Table ${tableId.slice(0,8)}] ${name} joined (${buyInUSD} USD)`);
+  });
+
+  // ── action ────────────────────────────────────────────────────────────
+  socket.on('action', ({ tableId, type, amount }) => {
+    const tid = tableId || socket.data.tableId;
+    if (!tid) return socket.emit('error', { message: 'Not at a table' });
+
+    const amountBig = amount !== undefined ? BigInt(String(amount)) : undefined;
+    const result = manager.playerAction(tid, socket.id, { type, amount: amountBig });
+
+    if (!result?.ok) {
+      socket.emit('error', { message: result?.error ?? 'Action failed' });
+    }
+  });
+
+  // ── get_state ─────────────────────────────────────────────────────────
+  socket.on('get_state', ({ tableId }) => {
+    const state = manager.getTableState(tableId || socket.data.tableId);
+    if (state) socket.emit('table_state', state);
+  });
+
+  // ── get_cards ─────────────────────────────────────────────────────────
+  socket.on('get_cards', ({ tableId }) => {
+    const tid   = tableId || socket.data.tableId;
+    const table = manager.tables?.get?.(tid);
+    if (!table?.game) return;
+    const pIdx = socket.data.playerIdx;
+    if (pIdx === undefined) return;
+    const cards = table.game.getHoleCards(pIdx);
+    socket.emit('hole_cards', { tableId: tid, cards });
+  });
+
+  // ── disconnect ────────────────────────────────────────────────────────
+  socket.on('disconnect', () => {
+    console.log(`[-] Socket disconnected: ${socket.id}`);
+    const tableId = socket.data.tableId;
+    if (!tableId) return;
+
+    const pIdx = socket.data.playerIdx;
+    if (pIdx !== undefined) {
+      // Force fold the disconnected player
+      const table = manager.tables?.get?.(tableId);
+      if (table?.game && table.game.state !== 'WAITING' && table.game.state !== 'FINISHED') {
+        table.game.forceAction(pIdx);
+      }
+    }
+  });
+});
+
+// ─── Start ───────────────────────────────────────────────────────────────────
+server.listen(PORT, () => {
+  console.log(`\n🃏  Poker Backend running on port ${PORT}`);
+  console.log(`   Mode    : ${DEV_MODE ? 'DEVELOPMENT (bots enabled)' : 'PRODUCTION'}`);
+  console.log(`   Health  : http://localhost:${PORT}/health`);
+  console.log(`   Tables  : http://localhost:${PORT}/tables`);
+  console.log(`   BotTest : POST http://localhost:${PORT}/dev/bot-table\n`);
+});
+
+module.exports = { app, server, manager, io };

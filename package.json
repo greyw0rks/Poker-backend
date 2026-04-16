@@ -1,0 +1,31 @@
+{
+  "name": "poker-backend",
+  "version": "1.0.0",
+  "description": "No-Limit Texas Hold'em backend for Celo MiniPay",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js",
+    "test": "jest --runInBand --forceExit",
+    "test:engine": "jest engine --runInBand --forceExit",
+    "test:bots": "jest bots --runInBand --forceExit"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "ethers": "^6.0.0",
+    "express": "^4.18.0",
+    "socket.io": "^4.7.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
+  }
+}

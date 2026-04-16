@@ -1,0 +1,31 @@
+[
+  {
+    "code": "CELO2025",
+    "gamesPerClaim": 3,
+    "maxClaims": 20,
+    "buyInPerGame": 1,
+    "expiresAt": 1776416540845,
+    "claims": [
+      {
+        "address": "0x7c290a591e1560f0e1116eb37a9405a739a9eb6c",
+        "claimedAt": 1775811797726,
+        "gamesLeft": 3
+      },
+      {
+        "address": "0xguest",
+        "claimedAt": 1775811846265,
+        "gamesLeft": 3
+      }
+    ],
+    "active": true
+  },
+  {
+    "code": "LAUNCH50",
+    "gamesPerClaim": 3,
+    "maxClaims": 50,
+    "buyInPerGame": 1,
+    "expiresAt": 1778403893179,
+    "claims": [],
+    "active": true
+  }
+]
