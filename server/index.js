@@ -8,7 +8,7 @@ const { TableManager } = require('./tableManager');
 const { STRATEGIES }   = require('../bots/botPlayer');
 const vouchers         = require('./voucherManager');
 
-const PORT      = process.env.PORT || 3001;
+const PORT      = process.env.PORT || 8080;
 const DEV_MODE  = process.env.NODE_ENV !== 'production';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 
@@ -107,82 +107,6 @@ manager.on('tableFinished', d => {
 manager.on('tableCancelled', d => io.to(d.tableId).emit('error', { message: 'Table cancelled' }));
 
 // ── REST ─────────────────────────────────────────────────────────────────────
-
-// ── Rooms & Difficulty ────────────────────────────────────────────────────────
-app.post('/rooms/create', (req, res) => {
-  const { hostName, difficulty, address } = req.body;
-  if (!hostName || !difficulty) return res.status(400).json({ error: 'Missing fields' });
-  const DIFFS = {
-    easy:   { buyInUSD:0.10, label:'Easy Table',    bots:3 },
-    normal: { buyInUSD:0.15, label:'Normal Table',   bots:3 },
-    hard:   { buyInUSD:0.50, label:'Hard Table',     bots:3 },
-    super:  { buyInUSD:1.00, label:'Super Table',    bots:3 },
-    private:{ buyInUSD:0.20, label:'Private Table',  bots:0 },
-  };
-  const diff = DIFFS[difficulty];
-  if (!diff) return res.status(400).json({ error: 'Invalid difficulty' });
-  const code    = Math.random().toString(36).slice(2,8).toUpperCase();
-  const tableId = manager.createTable({ minBuyInUSD: diff.buyInUSD, name: diff.label });
-  const table   = manager.tables.get(tableId);
-  if (table) { table.roomCode=code; table.difficulty=difficulty; table.isPrivate=difficulty==='private'; table.hostName=hostName; }
-  const strategies = [STRATEGIES.GTO_BASIC, STRATEGIES.AGGRESSIVE, STRATEGIES.CALL_STATION, STRATEGIES.RANDOM];
-  if (diff.bots > 0) {
-    for (let i=0; i<diff.bots; i++) manager.addBot(tableId, strategies[i%strategies.length], diff.buyInUSD);
-  }
-  const humanPlayerId = 'human_pending_' + tableId.slice(0,8);
-  manager.joinTable({ tableId, playerId:humanPlayerId, name:hostName, address:address||'0xHOST', buyInUSD:diff.buyInUSD });
-  res.json({ tableId, code, humanPlayerId, difficulty, buyInUSD:diff.buyInUSD, label:diff.label });
-});
-
-app.get('/rooms/:code', (req, res) => {
-  const code = req.params.code.toUpperCase();
-  for (const [tableId, table] of manager.tables) {
-    if (table.roomCode === code)
-      return res.json({ found:true, tableId, name:table.name,
-        difficulty:table.difficulty, buyInUSD:table.minBuyInUSD,
-        playerCount:table.players.length, state:table.state });
-  }
-  res.status(404).json({ found:false, error:'Room not found' });
-});
-
-app.get('/rooms', (req, res) => {
-  const rooms=[];
-  for (const [tableId,table] of manager.tables)
-    if(table.roomCode&&table.state==='LOBBY')
-      rooms.push({tableId,code:table.roomCode,name:table.name,
-        difficulty:table.difficulty,playerCount:table.players.length,
-        isPrivate:table.isPrivate,hostName:table.hostName,startAt:table.startAt});
-  res.json(rooms);
-});
-
-// ── Stats & Leaderboard ───────────────────────────────────────────────────────
-app.get('/leaderboard', (req, res) => {
-  try { res.json(getLeaderboard()); } catch(e) { res.json([]); }
-});
-app.get('/stats/:address', (req, res) => {
-  try { res.json(getPlayerStats(req.params.address)); } catch(e) { res.json({}); }
-});
-
-// ── Voucher aliases (match frontend calls) ────────────────────────────────────
-app.post('/vouchers/redeem', (req, res) => {
-  const { code, address } = req.body;
-  if (!code || !address) return res.status(400).json({ error: 'Missing code or address' });
-  try { res.json(redeemVoucher(code, address)); } catch(e) { res.status(500).json({ ok:false, error:e.message }); }
-});
-app.get('/vouchers/balance/:address', (req, res) => {
-  try { res.json(getVoucherBalance(req.params.address)); } catch(e) { res.json({ hasBalance:false, gamesLeft:0 }); }
-});
-app.post('/admin/vouchers', (req, res) => {
-  const { secret, code, gamesPerClaim, maxClaims, buyInPerGame, daysValid } = req.body;
-  if (secret !== (process.env.ADMIN_SECRET||'celopoker_admin')) return res.status(403).json({ error:'Unauthorized' });
-  res.json(createVoucher({ code, gamesPerClaim, maxClaims, buyInPerGame, daysValid }));
-});
-app.get('/admin/vouchers', (req, res) => {
-  if (req.query.secret !== (process.env.ADMIN_SECRET||'celopoker_admin')) return res.status(403).json({ error:'Unauthorized' });
-  res.json(listVouchers());
-});
-
-
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 app.get('/tables', (req, res) => res.json(manager.getLobbyTables()));
 app.get('/tables/:id', (req, res) => {
@@ -205,7 +129,7 @@ app.post('/dev/bot-table', (req, res) => {
 
 app.post('/dev/human-bot-table', (req, res) => {
   if (!DEV_MODE) return res.status(403).json({ error: 'Dev only' });
-  const { humanName = 'Player', botCount = 3, minBuyInUSD = 0.2 } = req.body;
+  const { humanName = 'Player', botCount = 3, minBuyInUSD = 1 } = req.body;
   const strategies = [STRATEGIES.GTO_BASIC, STRATEGIES.AGGRESSIVE, STRATEGIES.CALL_STATION, STRATEGIES.RANDOM];
   const tableId       = manager.createTable({ minBuyInUSD, name: 'CeloPoker Table' });
   const humanPlayerId = 'human_pending_' + tableId.slice(0, 8);
@@ -247,6 +171,127 @@ app.get('/admin/voucher/:code', requireAdmin, (req, res) => {
 
 app.post('/admin/voucher/deactivate', requireAdmin, (req, res) => {
   res.json({ ok: vouchers.deactivateVoucher(req.body.code) });
+});
+
+
+// ── Difficulty rooms ──────────────────────────────────────────────────────────
+app.post('/rooms/create', (req, res) => {
+  const { hostName, difficulty, address } = req.body;
+  if (!hostName || !difficulty) return res.status(400).json({ error: 'Missing fields' });
+  const DIFFS = {
+    easy:    { buyInUSD: 0.10, label: 'Easy Table',    bots: 3 },
+    normal:  { buyInUSD: 0.15, label: 'Normal Table',  bots: 3 },
+    hard:    { buyInUSD: 0.50, label: 'Hard Table',    bots: 3 },
+    super:   { buyInUSD: 1.00, label: 'Super Table',   bots: 3 },
+    private: { buyInUSD: 0.20, label: 'Private Table', bots: 0 },
+  };
+  const diff = DIFFS[difficulty];
+  if (!diff) return res.status(400).json({ error: 'Invalid difficulty' });
+
+  const code    = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const tableId = manager.createTable({ minBuyInUSD: diff.buyInUSD, name: diff.label });
+  const table   = manager.tables.get(tableId);
+  if (table) {
+    table.roomCode  = code;
+    table.difficulty = difficulty;
+    table.isPrivate  = difficulty === 'private';
+    table.hostName   = hostName;
+  }
+
+  const strategies = [STRATEGIES.GTO_BASIC, STRATEGIES.AGGRESSIVE, STRATEGIES.CALL_STATION, STRATEGIES.RANDOM];
+  if (diff.bots > 0) {
+    for (let i = 0; i < diff.bots; i++)
+      manager.addBot(tableId, strategies[i % strategies.length], diff.buyInUSD);
+  }
+
+  const humanPlayerId = 'human_pending_' + tableId.slice(0, 8);
+  manager.joinTable({
+    tableId, playerId: humanPlayerId,
+    name: hostName, address: address || '0xHOST',
+    buyInUSD: diff.buyInUSD,
+  });
+
+  res.json({ tableId, code, humanPlayerId, difficulty, buyInUSD: diff.buyInUSD, label: diff.label });
+});
+
+app.get('/rooms/:code', (req, res) => {
+  const code = req.params.code.toUpperCase();
+  for (const [tableId, table] of manager.tables) {
+    if (table.roomCode === code)
+      return res.json({
+        found: true, tableId, name: table.name, state: table.state,
+        difficulty: table.difficulty, buyInUSD: table.minBuyInUSD,
+        playerCount: table.players.length,
+      });
+  }
+  res.status(404).json({ found: false, error: 'Room not found or expired' });
+});
+
+app.get('/rooms', (req, res) => {
+  const rooms = [];
+  for (const [tableId, table] of manager.tables) {
+    if (table.roomCode && table.state === 'LOBBY')
+      rooms.push({
+        tableId, code: table.roomCode, name: table.name,
+        difficulty: table.difficulty, playerCount: table.players.length,
+        isPrivate: table.isPrivate, hostName: table.hostName, startAt: table.startAt,
+      });
+  }
+  res.json(rooms);
+});
+
+// ── Stats & Leaderboard ───────────────────────────────────────────────────────
+app.get('/leaderboard', (req, res) => {
+  try { res.json(getLeaderboard()); } catch (e) { res.json([]); }
+});
+
+app.get('/stats/:address', (req, res) => {
+  try { res.json(getPlayerStats(req.params.address)); } catch (e) { res.json({ sessions: 0, totalWonUSD: 0, netUSD: 0 }); }
+});
+
+// ── Voucher routes (match frontend calls) ─────────────────────────────────────
+app.post('/vouchers/redeem', (req, res) => {
+  const { code, address } = req.body;
+  if (!code || !address) return res.status(400).json({ error: 'Missing code or address' });
+  try { res.json(redeemVoucher(code, address)); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/vouchers/balance/:address', (req, res) => {
+  try { res.json(getVoucherBalance(req.params.address)); }
+  catch (e) { res.json({ hasBalance: false, gamesLeft: 0 }); }
+});
+
+app.post('/admin/vouchers', (req, res) => {
+  const { secret, code, gamesPerClaim, maxClaims, buyInPerGame, daysValid } = req.body;
+  if (secret !== (process.env.ADMIN_SECRET || 'celopoker_admin'))
+    return res.status(403).json({ error: 'Unauthorized' });
+  res.json(createVoucher({ code, gamesPerClaim, maxClaims, buyInPerGame, daysValid }));
+});
+
+app.get('/admin/vouchers', (req, res) => {
+  if (req.query.secret !== (process.env.ADMIN_SECRET || 'celopoker_admin'))
+    return res.status(403).json({ error: 'Unauthorized' });
+  res.json(listVouchers());
+});
+
+app.delete('/admin/vouchers/:code', (req, res) => {
+  if (req.query.secret !== (process.env.ADMIN_SECRET || 'celopoker_admin'))
+    return res.status(403).json({ error: 'Unauthorized' });
+  res.json(deactivateVoucher(req.params.code));
+});
+
+// ── Dev: human+bot table ──────────────────────────────────────────────────────
+app.post('/dev/human-bot-table', (req, res) => {
+  if (!DEV_MODE) return res.status(403).json({ error: 'Dev only' });
+  const { humanName = 'Player', botCount = 3, minBuyInUSD = 0.2 } = req.body;
+  const strategies = [STRATEGIES.GTO_BASIC, STRATEGIES.AGGRESSIVE, STRATEGIES.CALL_STATION, STRATEGIES.RANDOM];
+  const tableId       = manager.createTable({ minBuyInUSD, name: 'CeloPoker Table' });
+  const humanPlayerId = 'human_pending_' + tableId.slice(0, 8);
+  manager.joinTable({ tableId, playerId: humanPlayerId, name: humanName, address: '0xHUMAN', buyInUSD: minBuyInUSD });
+  for (let i = 0; i < Math.min(5, Math.max(1, botCount)); i++)
+    manager.addBot(tableId, strategies[i % strategies.length], minBuyInUSD + Math.random() * 4);
+  res.json({ tableId, humanPlayerId, humanSlot: 0 });
 });
 
 // ── Socket ────────────────────────────────────────────────────────────────────
