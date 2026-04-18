@@ -15,7 +15,7 @@ const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST', 'OPTIONS'] },
+  cors: { origin: ['https://poker-frontend-seven.vercel.app','http://localhost:3000'], methods: ['GET','POST','OPTIONS'], credentials: true },
 });
 
 app.use(express.json());
