@@ -15,7 +15,7 @@ const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: ['https://poker-frontend-seven.vercel.app','http://localhost:3000'], methods: ['GET','POST','OPTIONS'], credentials: true },
+  cors: { origin: '*', methods: ['GET', 'POST', 'OPTIONS'] },
 });
 
 app.use(express.json());
@@ -211,7 +211,7 @@ app.post('/rooms/create', (req, res) => {
     buyInUSD: diff.buyInUSD,
   });
 
-  res.json({ tableId, code, humanPlayerId, difficulty, buyInUSD: diff.buyInUSD, label: diff.label });
+  res.json({ tableId, code, humanPlayerId, difficulty, buyInUSD: diff.buyInUSD, label: diff.label, onChainTableId: null });
 });
 
 app.get('/rooms/:code', (req, res) => {
@@ -394,6 +394,17 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+
+// Keep-alive: Railway kills idle processes — ping self every 4 minutes
+if (process.env.NODE_ENV === 'production' && process.env.RAILWAY_PUBLIC_DOMAIN) {
+  const https = require('https');
+  setInterval(() => {
+    try {
+      https.get('https://' + process.env.RAILWAY_PUBLIC_DOMAIN + '/health', () => {}).on('error', () => {});
+    } catch (_) {}
+  }, 4 * 60 * 1000);
+}
 
 server.listen(PORT, () => {
   console.log(`\n🃏  Poker Backend  port ${PORT}  [${DEV_MODE ? 'DEV' : 'PROD'}]`);
