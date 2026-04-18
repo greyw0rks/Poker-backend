@@ -151,15 +151,4 @@ data/               — Persistent JSON files (vouchers, balances, winnings)
 
 ## Admin: Creating Vouchers
 
-```bash
-curl -X POST https://your-backend.railway.app/admin/vouchers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "secret": "celopoker_admin",
-    "code": "CELO2025",
-    "gamesPerClaim": 3,
-    "maxClaims": 20,
-    "buyInPerGame": 1,
-    "daysValid": 7
-  }'
-```
+
