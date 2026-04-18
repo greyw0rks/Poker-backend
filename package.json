@@ -1,6 +1,6 @@
 {
   "name": "@greyw0rks/poker-backend",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "No-Limit Texas Hold'em backend for Celo MiniPay",
   "main": "server/index.js",
   "type": "commonjs",
