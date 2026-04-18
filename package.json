@@ -1,15 +1,36 @@
 {
-  "name": "poker-backend",
-  "version": "1.0.0",
+  "name": "@greyw0rks/poker-backend",
+  "version": "1.0.1",
   "description": "No-Limit Texas Hold'em backend for Celo MiniPay",
   "main": "server/index.js",
   "type": "commonjs",
+  "files": [
+    "server",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
     "test": "jest --runInBand --forceExit",
     "test:engine": "jest engine --runInBand --forceExit",
     "test:bots": "jest bots --runInBand --forceExit"
+  },
+  "keywords": [
+    "poker",
+    "celo",
+    "minipay",
+    "web3",
+    "texas-holdem",
+    "blockchain",
+    "socket.io"
+  ],
+  "author": "greyw0rks",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "dotenv": "^16.0.0",
@@ -27,5 +48,13 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ]
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/greyw0rks/poker-backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/greyw0rks/poker-backend/issues"
+  },
+  "homepage": "https://github.com/greyw0rks/poker-backend#readme"
 }
