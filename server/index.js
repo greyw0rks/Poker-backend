@@ -148,14 +148,14 @@ app.post('/voucher/redeem', (req, res) => {
 });
 
 app.get('/voucher/balance/:address', (req, res) => {
-  res.json(vouchers.getWalletBalance(req.params.address));
+  res.json(vouchers.getVoucherBalance(req.params.address));
 });
 
 // ── Voucher admin ─────────────────────────────────────────────────────────────
 app.post('/admin/voucher/create', requireAdmin, (req, res) => {
   const { code, maxClaims = 20, gamesPerClaim = 3, buyInUSD = 1, expiryDays = 7 } = req.body;
   try {
-    const v = vouchers.createVoucher({ code, maxClaims, gamesPerClaim, buyInUSD, expiryDays });
+    const v = vouchers.createVoucher({ code, maxClaims, gamesPerClaim, buyInPerGame: buyInUSD, daysValid: expiryDays });
     console.log('[Voucher] Created:', v.code);
     res.json({ ok: true, voucher: v });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
@@ -164,7 +164,8 @@ app.post('/admin/voucher/create', requireAdmin, (req, res) => {
 app.get('/admin/voucher/list', requireAdmin, (req, res) => res.json(vouchers.listVouchers()));
 
 app.get('/admin/voucher/:code', requireAdmin, (req, res) => {
-  const stats = vouchers.getVoucherStats(req.params.code.toUpperCase());
+  const all   = vouchers.listVouchers();
+  const stats = all.find(v => v.code === req.params.code.toUpperCase());
   if (!stats) return res.status(404).json({ error: 'Not found' });
   res.json(stats);
 });
@@ -281,18 +282,6 @@ app.delete('/admin/vouchers/:code', (req, res) => {
   res.json(deactivateVoucher(req.params.code));
 });
 
-// ── Dev: human+bot table ──────────────────────────────────────────────────────
-app.post('/dev/human-bot-table', (req, res) => {
-  if (!DEV_MODE) return res.status(403).json({ error: 'Dev only' });
-  const { humanName = 'Player', botCount = 3, minBuyInUSD = 0.2 } = req.body;
-  const strategies = [STRATEGIES.GTO_BASIC, STRATEGIES.AGGRESSIVE, STRATEGIES.CALL_STATION, STRATEGIES.RANDOM];
-  const tableId       = manager.createTable({ minBuyInUSD, name: 'CeloPoker Table' });
-  const humanPlayerId = 'human_pending_' + tableId.slice(0, 8);
-  manager.joinTable({ tableId, playerId: humanPlayerId, name: humanName, address: '0xHUMAN', buyInUSD: minBuyInUSD });
-  for (let i = 0; i < Math.min(5, Math.max(1, botCount)); i++)
-    manager.addBot(tableId, strategies[i % strategies.length], minBuyInUSD + Math.random() * 4);
-  res.json({ tableId, humanPlayerId, humanSlot: 0 });
-});
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
@@ -302,7 +291,7 @@ io.on('connection', (socket) => {
   socket.on('join_table', ({ tableId, name, address, buyInUSD, humanPlayerId }) => {
     if (!tableId || !name) return socket.emit('error', { message: 'Missing fields' });
 
-    if (humanPlayerId && DEV_MODE) {
+    if (humanPlayerId) {
       const table = manager.tables && manager.tables.get(tableId);
       if (table) {
         const pIdx = table.players.findIndex(p => p.id === humanPlayerId);
@@ -331,11 +320,11 @@ io.on('connection', (socket) => {
     const effectiveBuyIn = buyInUSD || 1;
 
     // Check voucher balance before joining
-    const vBal = vouchers.getWalletBalance(effectiveAddr);
+    const vBal = vouchers.getVoucherBalance(effectiveAddr);
     let usedVoucher = false;
-    if (vBal.gamesLeft > 0 && effectiveBuyIn <= vBal.buyInUSD) {
-      const used = vouchers.useGame(effectiveAddr);
-      if (used.used) { usedVoucher = true; }
+    if (vBal.gamesLeft > 0 && effectiveBuyIn <= (vBal.usdPerGame || 999)) {
+      const used = vouchers.useVoucherGame(effectiveAddr);
+      if (used.ok) { usedVoucher = true; }
     }
 
     const result = manager.joinTable({

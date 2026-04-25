@@ -157,14 +157,16 @@ class TableManager extends EventEmitter {
 
   _updateLobbyTimer(table) {
     const n = table.players.length;
+    // Private rooms only need 2 players; public tables need MIN_PLAYERS (3)
+    const minPlayers = table.isPrivate ? 2 : MIN_PLAYERS;
 
-    if (n < MIN_PLAYERS) {
+    if (n < minPlayers) {
       clearTimeout(table.lobbyTimer);
       table.startAt = null;
       return;
     }
 
-    if (n === MIN_PLAYERS) {
+    if (n === minPlayers) {
       // Start 3-minute countdown
       table.startAt = Date.now() + LOBBY_START_TIMER_MS;
       clearTimeout(table.lobbyTimer);
@@ -178,7 +180,7 @@ class TableManager extends EventEmitter {
     }
 
     // 4th, 5th, 6th player: add 30s to existing timer
-    if (n > MIN_PLAYERS && table.startAt) {
+    if (n > minPlayers && table.startAt) {
       clearTimeout(table.lobbyTimer);
       table.startAt = Math.min(table.startAt + LOBBY_EXTRA_PLAYER_MS, Date.now() + LOBBY_START_TIMER_MS);
       const remaining = table.startAt - Date.now();
@@ -240,6 +242,7 @@ class TableManager extends EventEmitter {
     game.on('actionTimeout', data  => this.emit('actionTimeout',{ tableId, ...data }));
 
     game.on('handComplete', async (result) => {
+      try {
       table.handCount++;
       this.emit('handComplete', { tableId, ...result });
 
@@ -262,6 +265,10 @@ class TableManager extends EventEmitter {
       } else {
         this._finishTable(tableId);
       }
+      } catch (e) {
+        console.error('[TableManager] handComplete handler error:', e.message);
+        try { this._finishTable(tableId); } catch (_) {}
+      }
     });
 
     // Wire up bot decision loop
@@ -269,7 +276,10 @@ class TableManager extends EventEmitter {
       if (state.actionIdx < 0) return;
       const actingPlayer = table.players[state.actionIdx];
       if (actingPlayer?.isBot) {
-        this._triggerBotAction(table, state, state.actionIdx);
+        this._triggerBotAction(table, state, state.actionIdx).catch(e => {
+          console.error('[Bot] Unhandled rejection in _triggerBotAction:', e.message);
+          try { table.game?.action(state.actionIdx, { type: 'fold' }); } catch (_) {}
+        });
       }
     });
 
@@ -289,10 +299,12 @@ class TableManager extends EventEmitter {
     const game = table.game;
     if (!game) return;
 
-    // Reset player hand state
+    // Reset player hand state; mark busted players eliminated so
+    // gameEngine.activePlayers skips them and they aren't dealt in.
     for (const p of game.players) {
       p.folded = false;
       p.allIn  = false;
+      if (p.chips === 0n) p.eliminated = true;
     }
     game.state = 'WAITING';
 
@@ -406,7 +418,7 @@ class TableManager extends EventEmitter {
 
   getLobbyTables() {
     return [...this.tables.values()]
-      .filter(t => t.state === 'LOBBY')
+      .filter(t => t.state === 'LOBBY' && !t.isPrivate)
       .map(t => ({
         tableId:    t.tableId,
         name:       t.name,
