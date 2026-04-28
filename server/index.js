@@ -13,19 +13,27 @@ const DEV_MODE  = process.env.NODE_ENV !== 'production';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 
 // ── On-chain payment verification ─────────────────────────────────────────────
-const { createPublicClient, http: viemHttp, parseAbi } = require('viem');
-const { celo } = require('viem/chains');
+// Uses raw JSON-RPC via Node 18 built-in fetch — no extra dependencies needed.
 
-const publicClient = createPublicClient({
-  chain: celo,
-  transport: viemHttp(process.env.CELO_RPC_URL || 'https://forno.celo.org'),
-});
+const CELO_RPC    = process.env.CELO_RPC_URL || 'https://forno.celo.org';
+let   _rpcId      = 1;
 
 // Prevent the same tx from being used to join twice
 const usedTxHashes = new Set();
 
-// keccak256("Transfer(address,address,uint256)") — same on every ERC-20
+// keccak256("Transfer(address,address,uint256)") — standard on every ERC-20
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+async function rpcCall(method, params) {
+  const res = await fetch(CELO_RPC, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ jsonrpc: '2.0', id: _rpcId++, method, params }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message);
+  return json.result;
+}
 
 /**
  * Verify an ERC-20 buy-in transaction before seating a player.
@@ -33,44 +41,38 @@ const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a116
  * Checks:
  *   1. Tx exists and succeeded on Celo mainnet
  *   2. tx.from matches the player's wallet address
- *   3. A Transfer event log is present to the poker contract (if CONTRACT_ADDRESS is set)
- *   4. The transferred amount is >= the required buy-in
+ *   3. A Transfer log goes to the poker contract for >= buyInUSD  (when POKER_CONTRACT_ADDRESS is set)
  *
- * @param {string} txHash       - 0x-prefixed transaction hash from the client
- * @param {string} fromAddress  - player's wallet address
- * @param {number} buyInUSD     - required buy-in in USD (e.g. 1.00)
+ * @param {string} txHash      - 0x-prefixed transaction hash from the client
+ * @param {string} fromAddress - player's wallet address
+ * @param {number} buyInUSD    - required buy-in in USD (e.g. 1.00)
  * @returns {{ ok: boolean, error?: string }}
  */
 async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
   try {
     const [receipt, tx] = await Promise.all([
-      publicClient.getTransactionReceipt({ hash: txHash }),
-      publicClient.getTransaction({ hash: txHash }),
+      rpcCall('eth_getTransactionReceipt', [txHash]),
+      rpcCall('eth_getTransactionByHash',  [txHash]),
     ]);
 
-    if (!receipt || receipt.status !== 'success') {
+    if (!receipt || receipt.status !== '0x1') {
       return { ok: false, error: 'Transaction not found or failed on-chain' };
     }
 
-    // Sender must match the joining wallet
     if (tx.from.toLowerCase() !== fromAddress.toLowerCase()) {
       return { ok: false, error: 'Transaction sender does not match your wallet address' };
     }
 
-    // If we know the contract address, verify a Transfer log goes TO it
     const contractAddr = process.env.POKER_CONTRACT_ADDRESS;
     if (contractAddr) {
-      const requiredAmountWei = BigInt(Math.round(buyInUSD * 1e18)); // 18-decimal ERC-20
-      const contractLower     = contractAddr.toLowerCase();
+      const requiredWei   = BigInt(Math.round(buyInUSD * 1e18));
+      const contractLower = contractAddr.toLowerCase();
 
-      const transferLog = receipt.logs.find(log => {
+      const transferLog = (receipt.logs || []).find(log => {
         if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) return false;
-        // topic2 is the `to` address, zero-padded to 32 bytes
-        const toAddr = '0x' + log.topics[2]?.slice(26);
+        const toAddr = '0x' + log.topics[2]?.slice(26); // strip 12-byte padding
         if (toAddr.toLowerCase() !== contractLower) return false;
-        // data is the uint256 amount
-        const amount = BigInt(log.data);
-        return amount >= requiredAmountWei;
+        return BigInt(log.data) >= requiredWei;
       });
 
       if (!transferLog) {
@@ -83,7 +85,7 @@ async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
 
     return { ok: true };
   } catch (e) {
-    console.error('[PaymentVerify] Error:', e.message);
+    console.error('[PaymentVerify]', e.message);
     return { ok: false, error: 'Could not verify transaction. Please try again.' };
   }
 }
