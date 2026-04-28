@@ -12,6 +12,82 @@ const PORT      = process.env.PORT || 8080;
 const DEV_MODE  = process.env.NODE_ENV !== 'production';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 
+// ── On-chain payment verification ─────────────────────────────────────────────
+const { createPublicClient, http, parseAbi } = require('viem');
+const { celo } = require('viem/chains');
+
+const publicClient = createPublicClient({
+  chain: celo,
+  transport: http(process.env.CELO_RPC_URL || 'https://forno.celo.org'),
+});
+
+// Prevent the same tx from being used to join twice
+const usedTxHashes = new Set();
+
+// keccak256("Transfer(address,address,uint256)") — same on every ERC-20
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+/**
+ * Verify an ERC-20 buy-in transaction before seating a player.
+ *
+ * Checks:
+ *   1. Tx exists and succeeded on Celo mainnet
+ *   2. tx.from matches the player's wallet address
+ *   3. A Transfer event log is present to the poker contract (if CONTRACT_ADDRESS is set)
+ *   4. The transferred amount is >= the required buy-in
+ *
+ * @param {string} txHash       - 0x-prefixed transaction hash from the client
+ * @param {string} fromAddress  - player's wallet address
+ * @param {number} buyInUSD     - required buy-in in USD (e.g. 1.00)
+ * @returns {{ ok: boolean, error?: string }}
+ */
+async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
+  try {
+    const [receipt, tx] = await Promise.all([
+      publicClient.getTransactionReceipt({ hash: txHash }),
+      publicClient.getTransaction({ hash: txHash }),
+    ]);
+
+    if (!receipt || receipt.status !== 'success') {
+      return { ok: false, error: 'Transaction not found or failed on-chain' };
+    }
+
+    // Sender must match the joining wallet
+    if (tx.from.toLowerCase() !== fromAddress.toLowerCase()) {
+      return { ok: false, error: 'Transaction sender does not match your wallet address' };
+    }
+
+    // If we know the contract address, verify a Transfer log goes TO it
+    const contractAddr = process.env.POKER_CONTRACT_ADDRESS;
+    if (contractAddr) {
+      const requiredAmountWei = BigInt(Math.round(buyInUSD * 1e18)); // 18-decimal ERC-20
+      const contractLower     = contractAddr.toLowerCase();
+
+      const transferLog = receipt.logs.find(log => {
+        if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) return false;
+        // topic2 is the `to` address, zero-padded to 32 bytes
+        const toAddr = '0x' + log.topics[2]?.slice(26);
+        if (toAddr.toLowerCase() !== contractLower) return false;
+        // data is the uint256 amount
+        const amount = BigInt(log.data);
+        return amount >= requiredAmountWei;
+      });
+
+      if (!transferLog) {
+        return {
+          ok: false,
+          error: `No valid buy-in transfer found. Please send at least $${buyInUSD} USDm to the game contract.`,
+        };
+      }
+    }
+
+    return { ok: true };
+  } catch (e) {
+    console.error('[PaymentVerify] Error:', e.message);
+    return { ok: false, error: 'Could not verify transaction. Please try again.' };
+  }
+}
+
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
@@ -288,7 +364,7 @@ io.on('connection', (socket) => {
   console.log('[+]', socket.id);
   socket.emit('connected', { socketId: socket.id });
 
-  socket.on('join_table', ({ tableId, name, address, buyInUSD, humanPlayerId }) => {
+  socket.on('join_table', async ({ tableId, name, address, buyInUSD, humanPlayerId, txHash }) => {
     if (!tableId || !name) return socket.emit('error', { message: 'Missing fields' });
 
     if (humanPlayerId) {
@@ -326,6 +402,26 @@ io.on('connection', (socket) => {
       const used = vouchers.useVoucherGame(effectiveAddr);
       if (used.ok) { usedVoucher = true; }
     }
+
+    // ── Payment gate ──────────────────────────────────────────────────────
+    // Voucher players are paid via their credit. Everyone else must provide
+    // a verified on-chain transaction hash.
+    if (!usedVoucher) {
+      if (!txHash) {
+        return socket.emit('error', {
+          message: `Buy-in of $${effectiveBuyIn} required. Send USDm to the game contract and include your transaction hash.`,
+        });
+      }
+      if (usedTxHashes.has(txHash)) {
+        return socket.emit('error', { message: 'This transaction has already been used to join a table.' });
+      }
+      const verified = await verifyPaymentTx(txHash, effectiveAddr, effectiveBuyIn);
+      if (!verified.ok) {
+        return socket.emit('error', { message: verified.error });
+      }
+      usedTxHashes.add(txHash);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     const result = manager.joinTable({
       tableId, playerId: socket.id, name,
