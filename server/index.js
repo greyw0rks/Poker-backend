@@ -254,9 +254,32 @@ app.post('/admin/voucher/deactivate', requireAdmin, (req, res) => {
 
 
 // ── Difficulty rooms ──────────────────────────────────────────────────────────
-app.post('/rooms/create', (req, res) => {
-  const { hostName, difficulty, address } = req.body;
+app.post('/rooms/create', async (req, res) => {
+  const { hostName, difficulty, address, txHash } = req.body;
   if (!hostName || !difficulty) return res.status(400).json({ error: 'Missing fields' });
+
+  // ── Payment gate ────────────────────────────────────────────────────────────
+  // Private rooms are free (friends play together, no buy-in).
+  // All other difficulties require a verified on-chain transfer.
+  if (difficulty !== 'private' && address && !address.startsWith('0xDEV') && address !== '0xHOST') {
+    if (!txHash) {
+      return res.status(402).json({ error: 'Payment required. Please send your buy-in first.' });
+    }
+    if (usedTxHashes.has(txHash)) {
+      return res.status(400).json({ error: 'This transaction has already been used.' });
+    }
+    // Look up buyInUSD for this difficulty to verify correct amount
+    const DIFF_BUYIN = { easy: 0.10, normal: 0.15, hard: 0.50, super: 1.00 };
+    const expectedBuyIn = DIFF_BUYIN[difficulty];
+    if (expectedBuyIn !== undefined) {
+      const verified = await verifyPaymentTx(txHash, address, expectedBuyIn);
+      if (!verified.ok) {
+        return res.status(402).json({ error: verified.error });
+      }
+      usedTxHashes.add(txHash);
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
   const DIFFS = {
     easy:    { buyInUSD: 0.10, label: 'Easy Table',    bots: 3 },
     normal:  { buyInUSD: 0.15, label: 'Normal Table',  bots: 3 },
