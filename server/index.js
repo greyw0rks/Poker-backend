@@ -13,12 +13,12 @@ const DEV_MODE  = process.env.NODE_ENV !== 'production';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'celopoker-admin-2025';
 
 // ── On-chain payment verification ─────────────────────────────────────────────
-const { createPublicClient, http, parseAbi } = require('viem');
+const { createPublicClient, http: viemHttp, parseAbi } = require('viem');
 const { celo } = require('viem/chains');
 
 const publicClient = createPublicClient({
   chain: celo,
-  transport: http(process.env.CELO_RPC_URL || 'https://forno.celo.org'),
+  transport: viemHttp(process.env.CELO_RPC_URL || 'https://forno.celo.org'),
 });
 
 // Prevent the same tx from being used to join twice
