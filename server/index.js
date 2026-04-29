@@ -268,7 +268,8 @@ app.post('/rooms/create', async (req, res) => {
   // ── Payment gate ────────────────────────────────────────────────────────────
   // Private rooms are free (friends play together, no buy-in).
   // All other difficulties require a verified on-chain transfer.
-  if (difficulty !== 'private' && address && !address.startsWith('0xDEV') && address !== '0xHOST') {
+  const isDev = process.env.NODE_ENV !== 'production';
+  if (difficulty !== 'private' && address && !(isDev && address.startsWith('0xDEV')) && address !== '0xHOST') {
     if (!txHash) {
       return res.status(402).json({ error: 'Payment required. Please send your buy-in first.' });
     }
