@@ -65,12 +65,19 @@ async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
 
     const contractAddr = process.env.POKER_CONTRACT_ADDRESS;
     if (contractAddr) {
+      // Accept transfers from any supported MiniPay stablecoin
+      const SUPPORTED_TOKENS = new Set([
+        '0x765de816845861e75a25fca122bb6898b8b1282a', // USDm (cUSD)
+        '0xceba9300f2b948710d2651d74d2caa7e55d70e73', // USDC
+        '0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e', // USDT
+      ]);
       const requiredWei   = BigInt(Math.round(buyInUSD * 1e18));
       const contractLower = contractAddr.toLowerCase();
 
       const transferLog = (receipt.logs || []).find(log => {
         if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) return false;
-        const toAddr = '0x' + log.topics[2]?.slice(26); // strip 12-byte padding
+        if (!SUPPORTED_TOKENS.has(log.address?.toLowerCase())) return false;
+        const toAddr = '0x' + log.topics[2]?.slice(26);
         if (toAddr.toLowerCase() !== contractLower) return false;
         return BigInt(log.data) >= requiredWei;
       });
@@ -78,7 +85,7 @@ async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
       if (!transferLog) {
         return {
           ok: false,
-          error: `No valid buy-in transfer found. Please send at least $${buyInUSD} USDm to the game contract.`,
+          error: `No valid buy-in transfer found. Please send at least $${buyInUSD} in USDm, USDC, or USDT to the game contract.`,
         };
       }
     }
