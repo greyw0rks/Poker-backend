@@ -65,11 +65,10 @@ async function verifyPaymentTx(txHash, fromAddress, buyInUSD) {
 
     const contractAddr = process.env.POKER_CONTRACT_ADDRESS;
     if (contractAddr) {
-      // Accept transfers from any supported MiniPay stablecoin
+      // Only accept USDm (cUSD) — the token the poker contract is deployed with.
+      // USDC/USDT use 6 decimals and require a contract rewrite to support.
       const SUPPORTED_TOKENS = new Set([
         '0x765de816845861e75a25fca122bb6898b8b1282a', // USDm (cUSD)
-        '0xceba9300f2b948710d2651d74d2caa7e55d70e73', // USDC
-        '0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e', // USDT
       ]);
       const requiredWei   = BigInt(Math.round(buyInUSD * 1e18));
       const contractLower = contractAddr.toLowerCase();
